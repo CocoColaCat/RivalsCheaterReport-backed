@@ -2,82 +2,67 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const admin = require('firebase-admin');
+
+// 使用 firebase Web SDK（非 admin）
+const { initializeApp } = require('firebase/app');
+const { getDatabase, ref, push, set, get, update, runTransaction, serverTimestamp } = require('firebase/database');
 
 // ================================================
-// 從環境變數讀取 Firebase 憑證（推薦方式）
+// 從環境變數讀取 firebaseConfig
 // ================================================
-let serviceAccount;
+let firebaseConfig;
 
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  // 生產環境（Render / Vercel / Railway 等）：單一環境變數，內容是整個 JSON 字串
+if (process.env.FIREBASE_CONFIG) {
   try {
-    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
   } catch (err) {
-    console.error('無法解析 FIREBASE_SERVICE_ACCOUNT 環境變數', err);
+    console.error('無法解析 FIREBASE_CONFIG 環境變數', err);
     process.exit(1);
   }
-} else if (process.env.NODE_ENV !== 'production') {
-  // 本地開發：直接讀取檔案（記得加到 .gitignore）
-  try {
-    serviceAccount = require('./firebase-service-account.json');
-  } catch (err) {
-    console.warn('找不到本地 firebase-service-account.json，使用環境變數模式');
-  }
 } else {
-  console.error('缺少 FIREBASE_SERVICE_ACCOUNT 環境變數');
+  console.error('缺少 FIREBASE_CONFIG 環境變數');
   process.exit(1);
 }
 
-// ================================================
-// 初始化 Firebase Admin
-// ================================================
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL || "https://YOUR_PROJECT_ID-default-rtdb.asia-southeast1.firebasedatabase.app"
-  // ↑ 建議也放環境變數 FIREBASE_DATABASE_URL
-});
-
-const db = admin.database();
+// 初始化 Firebase App
+const appFirebase = initializeApp(firebaseConfig);
+const db = getDatabase(appFirebase);
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || "*", // 生產環境建議改成你的前端網域，例如 "https://your-frontend.onrender.com"
+    origin: process.env.CORS_ORIGIN || "*",
     methods: ["GET", "POST"],
     credentials: true
   }
 });
 
-// 簡單根路由，確認伺服器活著
+// 根路由
 app.get('/', (req, res) => {
-  res.send('Rivals Report Backend is running');
+  res.send('Rivals Report Backend is running (using firebase Web SDK)');
 });
 
 // ================================================
-// Socket.IO 主要邏輯
+// Socket.IO 邏輯
 // ================================================
 io.on('connection', (socket) => {
   console.log(`用戶連線: ${socket.id}`);
-
-  // 加入 reports 房間，方便全域廣播
   socket.join('reports');
 
-  // 1. 客戶端要求取得所有 pending reports
+  // 取得所有 pending reports
   socket.on('getReports', async () => {
     try {
-      const snapshot = await db.ref('reports')
-        .orderByChild('status')
-        .equalTo('pending')
-        .once('value');
-
+      const snapshot = await get(ref(db, 'reports'));
       const reports = [];
+      
       snapshot.forEach((child) => {
-        reports.push({
-          id: child.key,
-          ...child.val()
-        });
+        if (child.val().status === 'pending') {
+          reports.push({
+            id: child.key,
+            ...child.val()
+          });
+        }
       });
 
       socket.emit('reportsList', reports);
@@ -87,19 +72,16 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 2. 提交新報告
+  // 提交新報告
   socket.on('submitReport', async (data) => {
     const { username, evidence_url, timestamp, additional_info } = data;
 
     if (!username || !evidence_url || !timestamp) {
-      socket.emit('submitResponse', {
-        success: false,
-        message: '缺少必要欄位（username, evidence_url, timestamp）'
-      });
+      socket.emit('submitResponse', { success: false, message: '缺少必要欄位' });
       return;
     }
 
-    const newReportRef = db.ref('reports').push();
+    const newReportRef = push(ref(db, 'reports'));
 
     const reportData = {
       username: username.trim(),
@@ -109,42 +91,40 @@ io.on('connection', (socket) => {
       votes_cheater: 0,
       votes_innocent: 0,
       status: 'pending',
-      createdAt: admin.database.ServerValue.TIMESTAMP,
+      createdAt: serverTimestamp(),
       submittedAt: new Date().toISOString()
     };
 
     try {
-      await newReportRef.set(reportData);
+      await set(newReportRef, reportData);
       
-      // 廣播給所有在 reports 房間的人
+      // 廣播新報告
       io.to('reports').emit('newReport', {
         id: newReportRef.key,
         ...reportData
       });
 
-      socket.emit('submitResponse', {
-        success: true,
-        message: '報告提交成功！'
-      });
+      socket.emit('submitResponse', { success: true, message: '報告提交成功！' });
     } catch (err) {
       console.error('提交報告失敗:', err);
-      socket.emit('submitResponse', {
-        success: false,
-        message: '伺服器錯誤，請稍後再試'
-      });
+      socket.emit('submitResponse', { success: false, message: '伺服器錯誤' });
     }
   });
 
-  // 3. 投 Cheater
+  // 投票 Cheater
   socket.on('voteCheater', async (reportId) => {
     if (!reportId) return;
 
-    const ref = db.ref(`reports/${reportId}/votes_cheater`);
+    const voteRef = ref(db, `reports/${reportId}/votes_cheater`);
 
     try {
-      await ref.transaction((current) => (current || 0) + 1);
-      const snapshot = await db.ref(`reports/${reportId}`).once('value');
-      const updated = snapshot.val();
+      await runTransaction(voteRef, (current) => {
+        return (current || 0) + 1;
+      });
+
+      // 取得更新後的完整報告
+      const reportSnap = await get(ref(db, `reports/${reportId}`));
+      const updated = reportSnap.val();
 
       io.to('reports').emit('voteUpdate', {
         id: reportId,
@@ -155,16 +135,19 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 4. 投 Innocent
+  // 投票 Innocent
   socket.on('voteInnocent', async (reportId) => {
     if (!reportId) return;
 
-    const ref = db.ref(`reports/${reportId}/votes_innocent`);
+    const voteRef = ref(db, `reports/${reportId}/votes_innocent`);
 
     try {
-      await ref.transaction((current) => (current || 0) + 1);
-      const snapshot = await db.ref(`reports/${reportId}`).once('value');
-      const updated = snapshot.val();
+      await runTransaction(voteRef, (current) => {
+        return (current || 0) + 1;
+      });
+
+      const reportSnap = await get(ref(db, `reports/${reportId}`));
+      const updated = reportSnap.val();
 
       io.to('reports').emit('voteUpdate', {
         id: reportId,
@@ -180,11 +163,8 @@ io.on('connection', (socket) => {
   });
 });
 
-// ================================================
 // 啟動伺服器
-// ================================================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`伺服器運行於埠號 ${PORT}`);
-  console.log(`環境: ${process.env.NODE_ENV || 'development'}`);
 });

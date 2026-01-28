@@ -1,7 +1,7 @@
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
-const axios = require('axios');
 const crypto = require('crypto');
 
 const { initializeApp } = require('firebase/app');
@@ -27,15 +27,40 @@ const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET_KEY;
 
 async function verifyTurnstileToken(token) {
   if (!token || !TURNSTILE_SECRET) return false;
-  try {
-    const response = await axios.post('https://challenges.cloudflare.com/turnstile/v0/siteverify', null, {
-      params: { secret: TURNSTILE_SECRET, response: token }
+
+  const data = `secret=${encodeURIComponent(TURNSTILE_SECRET)}&response=${encodeURIComponent(token)}`;
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'challenges.cloudflare.com',
+      path: '/turnstile/v0/siteverify',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': data.length
+      }
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body);
+          resolve(result.success === true);
+        } catch (err) {
+          console.error('Turnstile 回傳解析失敗:', err);
+          resolve(false);
+        }
+      });
     });
-    return response.data.success === true;
-  } catch (err) {
-    console.error('Turnstile 驗證錯誤:', err.message);
-    return false;
-  }
+
+    req.on('error', (err) => {
+      console.error('Turnstile 請求錯誤:', err.message);
+      resolve(false);
+    });
+
+    req.write(data);
+    req.end();
+  });
 }
 
 function getClientIp(socket) {
@@ -129,7 +154,6 @@ io.on('connection', (socket) => {
     reportId = String(reportId || '').trim();
 
     if (!reportId) {
-      console.warn('voteCheater 缺少有效 reportId');
       return socket.emit('voteResponse', { success: false, message: '缺少報告 ID' });
     }
 
@@ -173,7 +197,6 @@ io.on('connection', (socket) => {
     reportId = String(reportId || '').trim();
 
     if (!reportId) {
-      console.warn('voteInnocent 缺少有效 reportId');
       return socket.emit('voteResponse', { success: false, message: '缺少報告 ID' });
     }
 

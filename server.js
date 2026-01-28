@@ -45,7 +45,12 @@ async function verifyTurnstileToken(token) {
       res.on('end', () => {
         try {
           const result = JSON.parse(body);
-          resolve(result.success === true);
+          if (result.success) {
+            resolve(true);
+          } else {
+            console.warn('Turnstile 失敗:', result['error-codes']);
+            resolve(false);
+          }
         } catch (e) {
           console.error('Turnstile 回應解析失敗:', e);
           resolve(false);
@@ -86,28 +91,54 @@ const io = new Server(server, {
   }
 });
 
-app.get('/', (req, res) => res.send('Backend running'));
+app.get('/', (req, res) => res.send('Rivals Report Backend Running'));
 
 io.on('connection', (socket) => {
   console.log(`用戶連線: ${socket.id}`);
   socket.join('reports');
 
-  socket.on('getReports', async () => {
+  // 取得下一個未投過的報告（前端按 Vote on Reports 或 Next 時呼叫）
+  socket.on('getNextReport', async () => {
+    const ip = getClientIp(socket);
+    const ipHash = hashIp(ip);
+
     try {
-      const snapshot = await get(ref(db, 'reports'));
-      const reports = [];
-      snapshot.forEach((child) => {
+      const reportsSnap = await get(ref(db, 'reports'));
+      const pending = [];
+      reportsSnap.forEach(child => {
         if (child.val().status === 'pending') {
-          reports.push({ id: child.key, ...child.val() });
+          pending.push({ id: child.key, ...child.val() });
         }
       });
-      socket.emit('reportsList', reports);
+
+      if (pending.length === 0) {
+        return socket.emit('nextReport', null);
+      }
+
+      const available = [];
+      for (const r of pending) {
+        const votedSnap = await get(ref(db, `voted_ips/${r.id}/${ipHash}`));
+        if (!votedSnap.exists()) {
+          available.push(r);
+        }
+      }
+
+      if (available.length === 0) {
+        return socket.emit('nextReport', null);
+      }
+
+      // 隨機挑一個
+      const randomIndex = Math.floor(Math.random() * available.length);
+      const selected = available[randomIndex];
+
+      socket.emit('nextReport', selected);
     } catch (err) {
-      console.error('getReports 錯誤:', err);
-      socket.emit('error', '無法載入報告');
+      console.error('getNextReport 錯誤:', err);
+      socket.emit('nextReport', null);
     }
   });
 
+  // 提交報告
   socket.on('submitReport', async (data) => {
     const { username, evidence_url, timestamp, additional_info, cf_turnstile_token } = data;
 
@@ -143,6 +174,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 投票 Cheater
   socket.on('voteCheater', async (payload) => {
     console.log('voteCheater 收到:', payload);
 
@@ -186,6 +218,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 投票 Innocent
   socket.on('voteInnocent', async (payload) => {
     console.log('voteInnocent 收到:', payload);
 

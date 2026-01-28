@@ -28,7 +28,7 @@ const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET_KEY;
 async function verifyTurnstileToken(token) {
   if (!token || !TURNSTILE_SECRET) return false;
 
-  const data = `secret=${encodeURIComponent(TURNSTILE_SECRET)}&response=${encodeURIComponent(token)}`;
+  const postData = `secret=${encodeURIComponent(TURNSTILE_SECRET)}&response=${encodeURIComponent(token)}`;
 
   return new Promise((resolve) => {
     const req = https.request({
@@ -37,7 +37,7 @@ async function verifyTurnstileToken(token) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': data.length
+        'Content-Length': Buffer.byteLength(postData)
       }
     }, (res) => {
       let body = '';
@@ -46,19 +46,19 @@ async function verifyTurnstileToken(token) {
         try {
           const result = JSON.parse(body);
           resolve(result.success === true);
-        } catch (err) {
-          console.error('Turnstile 回傳解析失敗:', err);
+        } catch (e) {
+          console.error('Turnstile 回應解析失敗:', e);
           resolve(false);
         }
       });
     });
 
     req.on('error', (err) => {
-      console.error('Turnstile 請求錯誤:', err.message);
+      console.error('Turnstile 請求失敗:', err.message);
       resolve(false);
     });
 
-    req.write(data);
+    req.write(postData);
     req.end();
   });
 }
@@ -103,8 +103,8 @@ io.on('connection', (socket) => {
       });
       socket.emit('reportsList', reports);
     } catch (err) {
-      console.error('getReports 失敗:', err);
-      socket.emit('error', '無法載入報告列表');
+      console.error('getReports 錯誤:', err);
+      socket.emit('error', '無法載入報告');
     }
   });
 
@@ -144,10 +144,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('voteCheater', async (payload) => {
-    console.log('voteCheater 收到 payload:', payload);
+    console.log('voteCheater 收到:', payload);
 
     if (!payload || typeof payload !== 'object') {
-      return socket.emit('voteResponse', { success: false, message: '無效的請求格式' });
+      return socket.emit('voteResponse', { success: false, message: '無效請求格式' });
     }
 
     let { reportId, cf_turnstile_token } = payload;
@@ -164,7 +164,7 @@ io.on('connection', (socket) => {
     const votedSnap = await get(votedRef);
 
     if (votedSnap.exists()) {
-      return socket.emit('voteResponse', { success: false, message: '你已經對此報告投過票了' });
+      return socket.emit('voteResponse', { success: false, message: '你已對此報告投過票' });
     }
 
     if (!await verifyTurnstileToken(cf_turnstile_token)) {
@@ -187,10 +187,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('voteInnocent', async (payload) => {
-    console.log('voteInnocent 收到 payload:', payload);
+    console.log('voteInnocent 收到:', payload);
 
     if (!payload || typeof payload !== 'object') {
-      return socket.emit('voteResponse', { success: false, message: '無效的請求格式' });
+      return socket.emit('voteResponse', { success: false, message: '無效請求格式' });
     }
 
     let { reportId, cf_turnstile_token } = payload;
@@ -207,7 +207,7 @@ io.on('connection', (socket) => {
     const votedSnap = await get(votedRef);
 
     if (votedSnap.exists()) {
-      return socket.emit('voteResponse', { success: false, message: '你已經對此報告投過票了' });
+      return socket.emit('voteResponse', { success: false, message: '你已對此報告投過票' });
     }
 
     if (!await verifyTurnstileToken(cf_turnstile_token)) {

@@ -1,32 +1,13 @@
 {
-  "name": "discord-verify-backend",
+  "name": "rivals-report-backend",
   "version": "1.0.0",
-  "description": "Discord 驗證系統後端 - Socket.IO + Firebase Realtime Database",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node server.js"
   },
-  "keywords": [
-    "discord",
-    "verification",
-    "socket.io",
-    "firebase",
-    "realtime-database"
-  ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "discord.js": "^14.16.3",
-    "express": "^4.21.0",
-    "firebase": "^10.13.1",
-    "socket.io": "^4.8.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.7"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "firebase": "^11.0.1"
   }
 }
